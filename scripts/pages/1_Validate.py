@@ -251,6 +251,9 @@ else:
     df["clip_prob"] = np.nan
     st.caption("No segment file loaded — probabilities unavailable.")
 
+# default sort order flag for probability
+prob_low_to_high = False
+
 # UI controls
 st.header("Validate predictions")
 
@@ -261,6 +264,13 @@ with top2:
     min_prob = st.slider("Min clip probability", 0.0, 1.0, 0.0, 0.01)
 with top3:
     sort_by = st.selectbox("Sort by", ["clip_prob", "filename"], index=0)
+    # When sorting by probability, allow low → high as well as high → low (default)
+    if sort_by == "clip_prob":
+        prob_low_to_high = st.checkbox(
+            "Probability: low → high",
+            value=False,
+            help="Tick to see the least confident predictions first."
+        )
 with top4:
     # spacer so the checkbox aligns with the other controls' labels
     st.markdown("<div style='height:1.95em'></div>", unsafe_allow_html=True)
@@ -290,7 +300,10 @@ else:
 
 # sorting
 if sort_by == "clip_prob":
-    df_view = df_view.sort_values(["clip_prob_f", "filename_stem"], ascending=[False, True])
+    df_view = df_view.sort_values(
+        ["clip_prob_f", "filename_stem"],
+        ascending=[prob_low_to_high, True]
+    )
 else:
     df_view = df_view.sort_values("filename_stem")
 
@@ -367,7 +380,10 @@ else:
     upd_df = pd.DataFrame(updates).drop_duplicates(subset=["filename", "UserLabel"])
     view_cols = ["filename", "FinalLabel", "UserLabel", "FinalLabelEffective", "clip_prob"]
     merged = upd_df.merge(df[view_cols], on="filename", how="left", suffixes=("", "_current"))
-    merged = merged.sort_values(["clip_prob"], ascending=[False])
+    merged = merged.sort_values(
+        ["clip_prob"],
+        ascending=[prob_low_to_high if sort_by == "clip_prob" else False]
+    )
     st.dataframe(
         merged[["filename", "FinalLabel", "UserLabel", "FinalLabelEffective", "clip_prob"]],
         width="stretch"  # replaced use_container_width
