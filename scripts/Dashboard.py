@@ -15,7 +15,7 @@ import io
 import soundfile as sf
 import base64
 from typing import Optional, Tuple, Set
-from config import RAW_AUDIO_DIR, EMBEDDINGS_DIR, RESULTS_DIR, TARGET_LENGTH, DEVICE
+from config import RAW_AUDIO_DIR, RESULTS_DIR
 
 st.set_page_config(layout="wide", page_title="Dashboard")
 os.environ["STREAMLIT_SERVER_FILEWATCHERTYPE"] = "none"  # Disable the file watcher
