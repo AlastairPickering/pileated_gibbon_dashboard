@@ -71,7 +71,7 @@ Python 3.9 <br>
 macOS or Windows
 
 ### macOS
-Double click scripts/launch.command (first run may need permission override in System Settings/Privacy & Security/Security/Allow applications downloaded from App store and identified developers).
+Double click MacOS_launcher.command (first run may need permission override in System Settings/Privacy & Security/Security/Allow applications downloaded from App store and identified developers).
 
 It will:
 - Create .venv
@@ -80,7 +80,7 @@ It will:
 - The app opens in your browser at http://localhost:8503.
 
 ### Windows
-- Double-click scripts\launch_dashboard.bat (or run python scripts\launch_dashboard.py).
+- Double-click Windows_launcher.bat (or run python scripts\launch_dashboard.py).
 - Same behaviour: venv + requirements + Streamlit on port 8503.
 
 ### manual launch
@@ -93,6 +93,8 @@ streamlit run scripts/Dashboard.py --server.port 8503 <br>
 <details open><summary>Repository layout</summary>
 <pre>
 repo/
+├─ MacOS_launcher.command         # macOS double-click dashboard launcher
+├─ Windows_launcher.bat           # Windows double-click dashboard launcher
 ├─ scripts/
 │  ├─ Dashboard.py                # main app page
 │  ├─ pages/
@@ -104,7 +106,6 @@ repo/
 │  ├─ preprocessing.py            # audio preproc + embedding helpers
 │  ├─ prepare_occupancy.py        # occupancy preproc + helpers
 │  ├─ launch_dashboard.py         # Python launcher (creates venv, installs deps)
-│  ├─ launch.command              # macOS double-click launcher
 │  ├─ requirements.txt             
 │  └─ config.py                   # paths & constants (RAW_AUDIO_DIR, RESULTS_DIR, etc.)
 ├─ results/                       # outputs (CSV, status, logs, assets)
