@@ -67,7 +67,7 @@ Outputs: <br>
 
 # Quick Start
 Prerequisites: <br>
-Python 3.9 <br>
+Python 3.9 - 3.12 <br>
 macOS or Windows
 
 ### macOS
