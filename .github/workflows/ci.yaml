@@ -1,0 +1,50 @@
+name: CI (macOS & Windows)
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest] 
+        python: ["3.9", "3.10", "3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Create virtual environment
+        run: python -m venv .venv
+
+      - name: Upgrade pip
+        shell: bash
+        run: ./.venv/Scripts/python -m pip install -U pip || (source .venv/bin/activate && pip install -U pip)
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ./.venv/Scripts/python -m pip install --no-input -r scripts/requirements.txt
+          else
+            source .venv/bin/activate
+            pip install --no-input -r scripts/requirements.txt
+          fi
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ./.venv/Scripts/python scripts/smoke_test.py
+          else
+            source .venv/bin/activate
+            python scripts/smoke_test.py
+          fi
