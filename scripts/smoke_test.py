@@ -2,6 +2,8 @@ from pathlib import Path
 import importlib.util
 import sys
 
+assert (3, 9) <= sys.version_info < (3, 13), "Python 3.9-3.12 required"
+
 # repo root
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "scripts"
