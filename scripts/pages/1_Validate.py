@@ -17,6 +17,44 @@ from config import RAW_AUDIO_DIR, RESULTS_DIR
 
 st.set_page_config(layout="wide", page_title="Validate")
 
+def render_validation(detections: pd.DataFrame, sources: dict) -> None:
+    """
+    Studio entry point. 'detections' is the dataset prepared by Studio.
+    'sources' may contain:
+       - project_root: Path
+       - audio_map: pd.DataFrame (filename, path)
+       - present_dir: Path (optional)
+    """
+    # Avoid set_page_config here (Studio did it already)
+    st.header("Validation")
+
+    # Use the incoming dataset instead of loading files from disk
+    df = detections.copy()
+
+    # Example: respect existing columns (FinalLabel/UserLabel) if present
+    if "UserLabel" not in df.columns:
+        df["UserLabel"] = ""
+
+    # Show an editor for label overrides (keep light; your existing UI can be dropped in here)
+    edited = st.data_editor(
+        df[["source_file", "label", "score", "timestamp_utc", "UserLabel"]].copy(),
+        use_container_width=True,
+        num_rows="dynamic",
+        key="validate_editor",
+    )
+
+    # Optional save back into the project (Studio workspace)
+    project_root: Path = sources.get("project_root")
+    if project_root and st.button("Save validation edits"):
+        out = (project_root / "data_normalised" / "detections_validated.csv")
+        edited.to_csv(out, index=False)
+        st.success(f"Saved to {out}")
+
+# Allow standalone debug run (keeps current dev workflow, does nothing during Studio import)
+if __name__ == "__main__":
+    st.write("This page is designed to be called by Studio via render_validation().")
+
+    
 # Session defaults 
 AUDIO_DEFAULT_DIR = RAW_AUDIO_DIR / "processed" / "present"
 if "audio_base_dir" not in st.session_state:
