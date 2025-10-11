@@ -1,100 +1,115 @@
 # studio/launch_studio.py
 # Flow: Login → Project Hub → Overview → Data mapping → Audio mapping → Metadata mapping → Dashboard
-# Studio (import steps) has no sidebar/header; PAMalytics pages restore them. Python 3.9-compatible. UK English.
+# Global chrome hidden everywhere EXCEPT inside Dashboard, where a sidebar is used for page navigation.
+# Python 3.9 compatible. UK English.
 
-import os
-import sys
 import json
-import uuid
-import platform
-import subprocess
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone as dt_timezone
 from pathlib import Path
-from typing import Optional, List, Dict, Any, NamedTuple
+from typing import Optional, List, Dict, Any, Tuple, NamedTuple
+import uuid
+import os
+import platform
+import subprocess
+import sys
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Dual-mode launcher:
-# - If PA_STUDIO_AS_APP != "1": pure Python launcher (no Streamlit import/UI), does
-#   venv bootstrap + installs + execs Streamlit ONCE. => No flash.
-# - If PA_STUDIO_AS_APP == "1": we are inside Streamlit app; run Studio UI.
-# ──────────────────────────────────────────────────────────────────────────────
-
+# ---------- Paths ----------
 STUDIO_ROOT = Path(__file__).resolve().parent
 REPO_ROOT   = STUDIO_ROOT.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 
-def _default_venv_dir() -> Path:
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+# Ensure scripts/ is importable
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+# ---- ONE-SHOT ENV BOOTSTRAP (no extra tab, no flash) ----
+import sys as _sys
+import subprocess as _sp
+import venv as _venv
+from pathlib import Path as _Path
+import platform as _platform
+import os as _os
+
+_STUDIO_FILE   = _Path(__file__).resolve()
+_REPO_ROOT     = _STUDIO_FILE.parent.parent
+_SCRIPTS_DIR   = _REPO_ROOT / "scripts"
+_REQS_FILE     = (_SCRIPTS_DIR / "requirements.txt")
+if not _REQS_FILE.exists() and (_REPO_ROOT / "requirements.txt").exists():
+    _REQS_FILE = _REPO_ROOT / "requirements.txt"
+
+def _default_venv_dir() -> _Path:
+    if _os.name == "nt":
+        base = _Path(_os.environ.get("LOCALAPPDATA", _Path.home() / "AppData" / "Local"))
         return base / "PileatedGibbonDashboard" / ".venv"
-    return Path.home() / ".pileated_gibbon_dashboard" / ".venv"
+    return _Path.home() / ".pileated_gibbon_dashboard" / ".venv"
 
-def _bootstrap_and_exec_streamlit():
-    import venv as _venv
-    from pathlib import Path as _Path
-    import subprocess as _sp
+_VENV_DIR   = _Path(_os.environ.get("PG_VENV_DIR", _default_venv_dir()))
+_PY_EXE     = _VENV_DIR / ("Scripts/python.exe" if _os.name == "nt" else "bin/python")
 
-    _STUDIO_FILE = _Path(__file__).resolve()
-    _REPO_ROOT   = _STUDIO_FILE.parent.parent
-    _SCRIPTS_DIR = _REPO_ROOT / "scripts"
+def _run(cmd, **kw):
+    print(">", " ".join(map(str, cmd)))
+    _sp.check_call(cmd, **kw)
 
-    _REQS_FILE = _SCRIPTS_DIR / "requirements.txt"
-    if not _REQS_FILE.exists() and (_REPO_ROOT / "requirements.txt").exists():
-        _REQS_FILE = _REPO_ROOT / "requirements.txt"
+def _ensure_venv():
+    if _VENV_DIR.exists():
+        return
+    print(f"[setup] Creating virtual environment at: {_VENV_DIR}")
+    _VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
+    _venv.EnvBuilder(with_pip=True).create(str(_VENV_DIR))
 
-    _VENV_DIR = _Path(os.environ.get("PG_VENV_DIR", str(_default_venv_dir())))
-    _PY_EXE   = _VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+def _torch_import_ok(py_exe: str) -> bool:
+    try:
+        _run([py_exe, "-c", "import torch; print(torch.__version__)"])
+        return True
+    except _sp.CalledProcessError:
+        return False
 
-    def _run(cmd, **kw):
-        print(">", " ".join(map(str, cmd)))
-        _sp.check_call(cmd, **kw)
+def _install_torch(py_exe: str):
+    print("[setup] Installing PyTorch…")
+    if _platform.system() == "Windows":
+        _run([py_exe, "-m", "pip", "install",
+              "--index-url", "https://download.pytorch.org/whl/cpu",
+              "torch", "torchvision", "torchaudio"])
+    else:
+        _run([py_exe, "-m", "pip", "install", "torch", "torchvision", "torchaudio"])
+    _run([py_exe, "-c", "import torch, torchaudio; print('torch', torch.__version__, 'torchaudio', torchaudio.__version__)"])
 
-    # create venv if needed
-    if not _VENV_DIR.exists():
-        print(f"[setup] Creating virtual environment at: {_VENV_DIR}")
-        _VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
-        _venv.EnvBuilder(with_pip=True).create(str(_VENV_DIR))
+def _needs_bootstrap() -> bool:
+    in_managed = _sys.executable and str(_sys.executable).startswith(str(_VENV_DIR))
+    try:
+        import importlib.util as _iu
+        have_librosa   = _iu.find_spec("librosa")   is not None
+        have_streamlit = _iu.find_spec("streamlit") is not None
+        have_sf        = _iu.find_spec("soundfile") is not None
+    except Exception:
+        have_librosa = False
+        have_streamlit = False
+        have_sf = False
+    return (not in_managed) or (not have_streamlit) or (not have_librosa) or (not have_sf)
 
-    # upgrade pip tooling
+if _os.environ.get("PA_STUDIO_BOOTSTRAPPED", "0") != "1" and _needs_bootstrap():
+    _ensure_venv()
     _run([str(_PY_EXE), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
 
-    # install requirements
     if not _REQS_FILE.exists():
         raise FileNotFoundError(f"requirements.txt not found at {_REQS_FILE}")
     print("[setup] Installing requirements.txt …")
     _run([str(_PY_EXE), "-m", "pip", "install", "-r", str(_REQS_FILE)])
 
-    # optional: torch check (safe to fail)
-    def _torch_import_ok(py_exe: str) -> bool:
-        try:
-            _run([py_exe, "-c", "import torch; print(torch.__version__)"])
-            return True
-        except _sp.CalledProcessError:
-            return False
-
-    def _install_torch(py_exe: str):
-        print("[setup] Installing PyTorch…")
-        if platform.system() == "Windows":
-            _run([py_exe, "-m", "pip", "install",
-                  "--index-url", "https://download.pytorch.org/whl/cpu",
-                  "torch", "torchvision", "torchaudio"])
-        else:
-            _run([py_exe, "-m", "pip", "install", "torch", "torchvision", "torchaudio"])
-        _run([py_exe, "-c", "import torch, torchaudio; print('torch', torch.__version__, 'torchaudio', torchaudio.__version__)"])
-
+    # Optional torch check (safe to ignore failures)
     try:
         if not _torch_import_ok(str(_PY_EXE)):
             _install_torch(str(_PY_EXE))
     except Exception as _e:
         print(f"[setup] PyTorch check/install skipped or failed: {_e}")
 
-    # exec Streamlit ONCE (no flash)
-    env = os.environ.copy()
-    env["PA_STUDIO_AS_APP"] = "1"   # signal: now run the Streamlit app branch
+    # Relaunch under the managed venv *in-place*
+    env = _os.environ.copy()
+    env["PA_STUDIO_BOOTSTRAPPED"] = "1"
     env["STREAMLIT_SERVER_FILEWATCHERTYPE"] = "none"
     env["STREAMLIT_LOG_LEVEL"] = "error"
-    PORT = str(env.get("PA_STUDIO_PORT", "8510"))
+    PORT = str(_os.environ.get("PA_STUDIO_PORT", "8510"))
     args = [
         str(_PY_EXE), "-m", "streamlit", "run", str(_STUDIO_FILE),
         "--server.headless", "true",
@@ -102,36 +117,29 @@ def _bootstrap_and_exec_streamlit():
         "--server.fileWatcherType", "none",
         "--logger.level", "error",
     ]
-    os.execvpe(str(_PY_EXE), args, env)  # replace current process forever
+    _os.execvpe(str(_PY_EXE), args, env)  # replaces current process
+# ---- END BOOTSTRAP ----
 
-# If we are NOT inside the Streamlit app, do bootstrap + start Streamlit once.
-if os.environ.get("PA_STUDIO_AS_APP") != "1":
-    _bootstrap_and_exec_streamlit()
-    raise SystemExit
+# ---------- Streamlit / UI ----------
+import streamlit as st  # noqa (after bootstrap)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# From here, we are inside Streamlit (env PA_STUDIO_AS_APP=1). App code below.
-# ──────────────────────────────────────────────────────────────────────────────
+def hide_chrome(hide_sidebar: bool = True, hide_header: bool = True) -> None:
+    css = ["<style>"]
+    if hide_sidebar:
+        css += [
+            'section[data-testid="stSidebar"] { display: none !important; }',
+            'div[data-testid="stSidebarNav"] { display: none !important; }',
+            '@media (min-width: 0px) { .block-container { padding-left: 1rem; padding-right: 1rem; } }',
+        ]
+    if hide_header:
+        css += [
+            'header { visibility: hidden !important; }',
+            'footer { visibility: hidden !important; }',
+            '#MainMenu { visibility: hidden !important; }',
+        ]
+    css += ["</style>"]
+    st.markdown("\n".join(css), unsafe_allow_html=True)
 
-# Make scripts/ importable
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-import streamlit as st
-
-# Studio: hide chrome; PAMalytics pages re-enable it explicitly.
-st.set_page_config(page_title="PAMalytics Studio", layout="wide", initial_sidebar_state="collapsed")
-st.markdown(
-    """
-    <style>
-      header, footer, [data-testid="stSidebar"], [data-testid="stSidebarNav"] { display:none !important; }
-      .block-container { padding-left: 1rem; padding-right: 1rem; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ---------- Small helpers ----------
 def chip(text: str, kind: str = "info") -> str:
     colours = {"ready":"#16a34a","pending":"#d97706","empty":"#6b7280","error":"#dc2626","info":"#3b82f6"}
     return f'<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:{colours.get(kind, "#3b82f6")};color:white;font-size:12px">{text}</span>'
@@ -139,16 +147,16 @@ def chip(text: str, kind: str = "info") -> str:
 def _btn(label: str, key: Optional[str] = None) -> bool:
     return st.button(label, key=key or label)
 
-def nav_row(left_label: str, left_route: str, right_label: Optional[str] = None, right_route: Optional[str] = None, key_prefix: str = "nav"):
+def nav_row(left_label: str, left_route: str,
+            right_label: Optional[str] = None, right_route: Optional[str] = None,
+            key_prefix: str = "nav"):
     c1, c2 = st.columns([1, 1])
     if left_label and c1.button(left_label, key=f"{key_prefix}_left"):
-        st.session_state.route = left_route
-        st.rerun()
+        st.session_state.route = left_route; st.rerun()
     if right_label and c2.button(right_label, key=f"{key_prefix}_right"):
-        st.session_state.route = right_route
-        st.rerun()
+        st.session_state.route = right_route; st.rerun()
 
-# ---------- Projects / storage ----------
+# ---------- Project model ----------
 PROJECTS_ROOT = STUDIO_ROOT / "projects"
 PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
 AUTH_FILE = STUDIO_ROOT / ".auth.json"
@@ -173,22 +181,48 @@ def _slug(name: str) -> str:
     return s[:64] or "project"
 
 def _default_status() -> Dict[str, str]:
-    return {"import_results":"empty","audio_resolver":"empty","metadata_joins":"empty","analysis":"empty","export":"empty"}
+    return {
+        "import_results":  "empty",
+        "audio_resolver":  "empty",
+        "metadata_joins":  "empty",
+        "analysis":        "empty",
+        "export":          "empty",
+    }
 
 def _default_paths(folder: Path) -> Dict[str, str]:
-    return {"root": str(folder), "data_raw":"data_raw/","data_normalised":"data_normalised/","metadata":"metadata/","exports":"exports/","logs":"logs/","workspace":"workspace/"}
+    return {
+        "root":            str(folder),
+        "data_raw":        "data_raw/",
+        "data_normalised": "data_normalised/",
+        "metadata":        "metadata/",
+        "exports":         "exports/",
+        "logs":            "logs/",
+        "workspace":       "workspace/",
+    }
 
 def create_project(name: str, use_case: str, created_by: Optional[str]) -> Path:
-    folder = PROJECTS_ROOT / _slug(name); folder.mkdir(parents=True, exist_ok=True)
-    manifest = ProjectManifest(project_id=str(uuid.uuid4()), name=name, use_case=use_case, created_by=created_by or "user",
-                               paths=_default_paths(folder), status=_default_status(),
-                               provenance={"app":"pamalytics_studio","version":"0.3.0"},
-                               last_opened=datetime.now(dt_timezone.utc).isoformat())
-    for p in manifest.paths.values(): (Path(folder) / p).mkdir(parents=True, exist_ok=True)
-    (Path(folder) / "project.json").write_text(manifest.to_json(), encoding="utf-8"); return Path(folder)
+    folder = PROJECTS_ROOT / _slug(name)
+    folder.mkdir(parents=True, exist_ok=True)
+    manifest = ProjectManifest(
+        project_id=str(uuid.uuid4()),
+        name=name,
+        use_case=use_case,
+        created_by=created_by or "user",
+        paths=_default_paths(folder),
+        status=_default_status(),
+        provenance={"app": "pamalytics_studio", "version": "0.3.0"},
+        last_opened=datetime.now(dt_timezone.utc).isoformat(),
+    )
+    for p in manifest.paths.values():
+        (Path(folder) / p).mkdir(parents=True, exist_ok=True)
+    (Path(folder) / "project.json").write_text(manifest.to_json(), encoding="utf-8")
+    return Path(folder)
 
 def list_projects() -> List[Path]:
-    return sorted([p for p in PROJECTS_ROOT.iterdir() if (p / "project.json").exists()], key=lambda p: p.stat().st_mtime, reverse=True)
+    return sorted(
+        [p for p in PROJECTS_ROOT.iterdir() if (p / "project.json").exists()],
+        key=lambda p: p.stat().st_mtime, reverse=True
+    )
 
 def load_project(folder: Path) -> dict:
     return json.loads((folder / "project.json").read_text(encoding="utf-8"))
@@ -197,41 +231,65 @@ def save_project(folder: Path, data: Dict[str, Any]) -> None:
     (folder / "project.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 def touch_last_opened(folder: Path) -> None:
-    data = load_project(folder); data["last_opened"] = datetime.now(dt_timezone.utc).isoformat(); save_project(folder, data)
+    data = load_project(folder)
+    data["last_opened"] = datetime.now(dt_timezone.utc).isoformat()
+    save_project(folder, data)
 
 def set_status(folder: Path, key: str, value: str) -> None:
     data = load_project(folder)
-    if "status" not in data or not isinstance(data["status"], dict): data["status"] = _default_status()
-    data["status"][key] = value; save_project(folder, data)
+    if "status" not in data or not isinstance(data["status"], dict):
+        data["status"] = _default_status()
+    data["status"][key] = value
+    save_project(folder, data)
 
 def ensure_paths_schema(folder: Path) -> None:
-    data = load_project(folder); paths = data.get("paths") or {}; changed = False
+    data = load_project(folder)
+    paths = data.get("paths") or {}
+    changed = False
     for k, v in _default_paths(folder).items():
-        if k not in paths: paths[k] = v; changed = True
+        if k not in paths:
+            paths[k] = v
+            changed = True
     if changed:
-        data["paths"] = paths; save_project(folder, data)
-        for rel in paths.values(): (folder / rel).mkdir(parents=True, exist_ok=True)
+        data["paths"] = paths
+        save_project(folder, data)
+        for rel in paths.values():
+            (folder / rel).mkdir(parents=True, exist_ok=True)
 
 def project_path(folder: Path, *keys: str) -> Path:
-    ensure_paths_schema(folder); data = load_project(folder)
-    base = (folder / data["paths"][keys[0]]).resolve(); base.mkdir(parents=True, exist_ok=True)
-    for k in keys[1:]: base = (base / k).resolve()
+    ensure_paths_schema(folder)
+    data = load_project(folder)
+    base = (folder / data["paths"][keys[0]]).resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    for k in keys[1:]:
+        base = (base / k).resolve()
     return base
 
-# ---------- Session boot ----------
+# ---------- App config ----------
+st.set_page_config(page_title="PAMalytics Studio", layout="wide", initial_sidebar_state="collapsed")
+hide_chrome(True, True)  # hide everywhere by default
+
+# ---------- Session ----------
 ss = st.session_state
 ss.setdefault("auth_user", None)
-ss.setdefault("route", "login")
+ss.setdefault("route", "login")   # "login" | "hub" | "overview" | "import" | "locate_audio" | "metadata" | "dashboard"
 ss.setdefault("current_project", None)
+ss.setdefault("pa_page", "Dashboard")  # which PA page inside the dashboard
+
+# Import state
 ss.setdefault("import_params", {})
 ss.setdefault("import_preview_ready", False)
 ss.setdefault("import_preview_df", None)
 ss.setdefault("import_last_saved", None)
 ss.setdefault("import_notes", [])
+
+# Audio state
 ss.setdefault("audio_dirs", [])
 ss.setdefault("audio_map_df", None)
 ss.setdefault("audio_map_preview", None)
 ss.setdefault("audio_save_path", None)
+
+# Coverage preference (used internally)
 ss.setdefault("use_stem_fallback", True)
 
 # Remember-me
@@ -245,7 +303,7 @@ if ss.get("auth_user") is None and AUTH_FILE.exists():
     except Exception:
         pass
 
-# ---------- Helpers for matching ----------
+# ---------- Coverage helpers ----------
 class Coverage(NamedTuple):
     matched_rows: int
     total_rows: int
@@ -268,21 +326,19 @@ def compute_audio_coverage(detections_csv: Path, mapping: Any, use_stem_fallback
     total_rows = int(len(det))
     det_files = det[["_basename","_name_lower","_stem_lower"]].drop_duplicates()
     total_unique_files = int(len(det_files))
-
-    if hasattr(mapping, "to_dict"): mp = mapping.copy()
+    if hasattr(mapping, "to_dict"):
+        mp = mapping.copy()
     elif isinstance(mapping, (str, Path)):
         try: mp = pd.read_csv(mapping)
         except Exception: return Coverage(0, total_rows, 0, total_unique_files)
-    else: return Coverage(0, total_rows, 0, total_unique_files)
-
+    else:
+        return Coverage(0, total_rows, 0, total_unique_files)
     if mp.empty or "filename" not in mp.columns: return Coverage(0, total_rows, 0, total_unique_files)
     mp = mp.assign(_filename=mp["filename"].astype(str).str.strip())
     mp["_name_lower"] = mp["_filename"].str.lower()
     mp["_stem_lower"] = mp["_name_lower"].apply(lambda s: os.path.splitext(s)[0])
-
     name_set = set(mp["_name_lower"].unique())
     name_match_mask = det["_name_lower"].isin(name_set)
-
     if use_stem_fallback:
         stem_counts = mp["_stem_lower"].value_counts()
         unique_stems = set(stem_counts[stem_counts == 1].index)
@@ -291,7 +347,6 @@ def compute_audio_coverage(detections_csv: Path, mapping: Any, use_stem_fallback
     else:
         stem_match_mask = det["_stem_lower"].isin(set())
         files_stem_match = False
-
     final_match_mask = name_match_mask | (~name_match_mask & stem_match_mask)
     matched_rows = int(final_match_mask.sum())
     files_name_match = det_files["_name_lower"].isin(name_set)
@@ -301,11 +356,20 @@ def compute_audio_coverage(detections_csv: Path, mapping: Any, use_stem_fallback
 
 def compute_import_stats(norm_csv: Path, audio_csv: Optional[Path], meta_csv: Optional[Path], use_stem_fallback: bool=True) -> Dict[str, Any]:
     import pandas as pd
-    stats = {"detections_rows":0,"unique_files_in_detections":0,"audio_files_indexed":0,"detections_with_audio":0,"metadata_join_rows":0,"final_rows":0}
-    if not norm_csv.exists(): return stats
+    stats = {
+        "detections_rows": 0,
+        "unique_files_in_detections": 0,
+        "audio_files_indexed": 0,
+        "detections_with_audio": 0,
+        "metadata_join_rows": 0,
+        "final_rows": 0
+    }
+    if not norm_csv.exists():
+        return stats
 
     det = pd.read_csv(norm_csv)
-    if det.empty or "source_file" not in det.columns: return stats
+    if det.empty or "source_file" not in det.columns:
+        return stats
     det = analysis_keys(det)
     stats["detections_rows"] = len(det)
     stats["unique_files_in_detections"] = det["_basename"].nunique()
@@ -333,7 +397,9 @@ def compute_import_stats(norm_csv: Path, audio_csv: Optional[Path], meta_csv: Op
                 with_audio["_det_id"] = with_audio.index
                 with_audio["basename"] = with_audio["_basename"]
                 with_audio["stem"] = with_audio["_stem_lower"]
-                with_audio["recorder_id"] = with_audio["basename"].apply(lambda n: n.split("_", 1)[0] if "_" in n else n)
+                with_audio["recorder_id"] = with_audio["basename"].apply(
+                    lambda n: n.split("_", 1)[0] if "_" in n else n
+                )
 
                 join_key_det, join_key_meta = None, None
                 if "recorder_id" in meta.columns:
@@ -347,20 +413,27 @@ def compute_import_stats(norm_csv: Path, audio_csv: Optional[Path], meta_csv: Op
 
                 if join_key_det and join_key_meta:
                     meta_keys = meta[[join_key_meta]].dropna().astype(str).drop_duplicates()
-                    joined = with_audio.merge(meta_keys, left_on=join_key_det, right_on=join_key_meta, how="left", indicator=True)
+                    joined = with_audio.merge(
+                        meta_keys, left_on=join_key_det, right_on=join_key_meta, how="left", indicator=True
+                    )
                     matched_det_count = int(joined.loc[joined["_merge"] == "both", "_det_id"].nunique())
                     stats["final_rows"] = matched_det_count
                 else:
                     stats["final_rows"] = len(with_audio)
             else:
                 stats["final_rows"] = len(with_audio)
+        else:
+            stats["audio_files_indexed"] = 0
+            stats["final_rows"] = 0
+    else:
+        stats["audio_files_indexed"] = 0
+        stats["final_rows"] = 0
+
     return stats
 
+# ---------- Build analysis dataset ----------
 def build_analysis_dataset(proj_path: Path, use_stem_fallback: bool=True):
-    """
-    Return (df, notes) filtered to rows that have a mapped audio file.
-    If enriched detections exist, use those; else use normalised.
-    """
+    """Return (df, notes) filtered to rows that have a mapped audio file."""
     import pandas as pd
     norm = project_path(proj_path, "data_normalised") / "detections_normalised.csv"
     enriched = project_path(proj_path, "data_normalised") / "detections_enriched.csv"
@@ -372,7 +445,7 @@ def build_analysis_dataset(proj_path: Path, use_stem_fallback: bool=True):
         return None, ["No audio mapping found."]
 
     det = pd.read_csv(enriched if enriched.exists() else norm)
-    mp = pd.read_csv(audio_csv)
+    mp  = pd.read_csv(audio_csv)
     if det.empty:
         return None, ["Detections are empty."]
     if mp.empty or "filename" not in mp.columns:
@@ -383,6 +456,7 @@ def build_analysis_dataset(proj_path: Path, use_stem_fallback: bool=True):
     mp = mp.assign(_filename=mp["filename"].astype(str).str.strip().str.lower())
     mp["_stem_lower"] = mp["_filename"].apply(lambda s: os.path.splitext(s)[0])
 
+    # Match detections to mapping
     name_set = set(mp["_filename"].unique())
     mask = det["_name_lower"].isin(name_set)
     if use_stem_fallback:
@@ -395,20 +469,91 @@ def build_analysis_dataset(proj_path: Path, use_stem_fallback: bool=True):
 
     matched = det.loc[mask].copy()
 
-    left = matched.merge(mp[["_filename","path"]], left_on="_name_lower", right_on="_filename", how="left")
+    # Join to get absolute paths (exact name, then unique stem)
+    left = matched.merge(mp[["_filename","path"]],
+                         left_on="_name_lower", right_on="_filename", how="left")
+
     if use_stem_fallback:
         need = left["path"].isna()
         if need.any():
-            stem_join = left.loc[need, ["_stem_lower"]].merge(mp[["_stem_lower", "path"]], on="_stem_lower", how="left")
+            stem_join = left.loc[need, ["_stem_lower"]].merge(
+                mp[["_stem_lower", "path"]], on="_stem_lower", how="left"
+            )
             left.loc[need, "path"] = stem_join["path"].values
 
-    left["basename"]   = left["_basename"]
-    left["stem"]       = left["_stem_lower"]
+    left["basename"] = left["_basename"]
+    left["stem"] = left["_stem_lower"]
     left["recorder_id"] = left["basename"].apply(lambda n: n.split("_", 1)[0] if "_" in n else n)
     return left, notes
 
-# ------------------ Views ------------------
+# ---------- NEW: per-detection clip builder (NO duration cap) ----------
+def ensure_detection_clips(proj_path: Path, detections_df, audio_map_df):
+    """
+    For every detection (source_file, start_s, end_s), write a WAV clip [start_s, end_s] with NO cap.
+    Returns a DataFrame with: filename, clip_path, start_s, end_s, duration_s.
+    """
+    import soundfile as sf
+    import numpy as np
+    import pandas as pd
+    import os
+
+    mp = audio_map_df.copy()
+    mp["_filename"] = mp["filename"].astype(str).str.strip().str.lower()
+    name_to_path = dict(zip(mp["_filename"], mp["path"]))
+
+    clips_dir = project_path(proj_path, "workspace") / "clips"
+    clips_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = []
+    det = detections_df.copy()
+    det["_basename"]   = det["source_file"].astype(str).apply(lambda p: os.path.basename(p))
+    det["_name_lower"] = det["_basename"].str.lower()
+
+    for _, r in det.iterrows():
+        src = name_to_path.get(r["_name_lower"])
+        if not src or not os.path.exists(src):
+            continue
+        try:
+            start_s = float(r["start_s"]); end_s = float(r["end_s"])
+        except Exception:
+            continue
+        if not (end_s > start_s):
+            continue
+
+        try:
+            info = sf.info(src)
+            sr   = info.samplerate
+            total = info.frames
+
+            start_f = max(0, int(start_s * sr))
+            end_f   = min(total, int(end_s * sr))
+            if end_f <= start_f:
+                continue
+
+            frames = end_f - start_f
+            y, _ = sf.read(src, start=start_f, frames=frames, dtype="float32", always_2d=False)
+
+            safe_stem = Path(r["_basename"]).stem
+            clip_name = f"{safe_stem}_{start_f}_{end_f}.wav"
+            clip_path = clips_dir / clip_name
+            sf.write(clip_path, y, sr)
+
+            rows.append({
+                "filename": r["_basename"],
+                "clip_path": str(clip_path),
+                "start_s": start_s,
+                "end_s": end_s,
+                "duration_s": frames / sr
+            })
+        except Exception:
+            continue
+
+    import pandas as pd
+    return pd.DataFrame(rows)
+
+# ---------- Views: Login / Hub / Overview / Import / Audio / Metadata ----------
 def view_login() -> None:
+    hide_chrome(True, True)
     st.title("Login")
     default_user = ""
     if AUTH_FILE.exists():
@@ -419,7 +564,7 @@ def view_login() -> None:
             pass
     with st.form("login_form", clear_on_submit=False):
         user = st.text_input("Username", value=default_user)
-        st.text_input("PIN (optional)", type="password")  # retained but unused
+        pin = st.text_input("PIN (optional)", type="password")
         remember = st.checkbox("Remember me", value=True)
         submit = st.form_submit_button("Sign in")
     if submit:
@@ -435,6 +580,7 @@ def view_login() -> None:
             st.rerun()
 
 def view_hub() -> None:
+    hide_chrome(True, True)
     if not st.session_state.get("auth_user"):
         st.session_state.route = "login"; st.rerun()
     st.title("Project Hub")
@@ -488,6 +634,7 @@ def _import_progress_cards(proj_path: Path) -> Dict[str, str]:
     return s
 
 def view_overview() -> None:
+    hide_chrome(True, True)
     if not st.session_state.get("auth_user"):
         st.session_state.route = "login"; st.rerun()
     if not st.session_state.get("current_project"):
@@ -512,8 +659,7 @@ def view_overview() -> None:
     with step1:
         st.markdown("#### 1) Data mapping")
         st.markdown(chip("ready" if s["import_results"]=="ready" else ("pending" if s["import_results"]=="pending" else "empty"),
-                         "ready" if s["import_results"]=="ready" else ("pending" if s["import_results"]=="pending" else "empty")),
-                    unsafe_allow_html=True)
+                         "ready" if s["import_results"]=="ready" else ("pending" if s["import_results"]=="pending" else "empty")), unsafe_allow_html=True)
         if norm_csv.exists(): st.caption(f"`{norm_csv.name}`")
         if st.button("Open Data mapping", key="open_step1"):
             st.session_state.route = "import"; st.rerun()
@@ -521,8 +667,7 @@ def view_overview() -> None:
     with step2:
         st.markdown("#### 2) Audio mapping")
         st.markdown(chip("ready" if s["audio_resolver"]=="ready" else ("pending" if s["audio_resolver"]=="pending" else "empty"),
-                         "ready" if s["audio_resolver"]=="ready" else ("pending" if s["audio_resolver"]=="pending" else "empty")),
-                    unsafe_allow_html=True)
+                         "ready" if s["audio_resolver"]=="ready" else ("pending" if s["audio_resolver"]=="pending" else "empty")), unsafe_allow_html=True)
         if audio_csv.exists():
             st.caption(f"`{audio_csv.name}`")
             if norm_csv.exists():
@@ -536,15 +681,20 @@ def view_overview() -> None:
     with step3:
         st.markdown("#### 3) Metadata mapping")
         st.markdown(chip("ready" if s["metadata_joins"]=="ready" else ("pending" if s["metadata_joins"]=="pending" else "empty"),
-                         "ready" if s["metadata_joins"]=="ready" else ("pending" if s["metadata_joins"]=="pending" else "empty")),
-                    unsafe_allow_html=True)
+                         "ready" if s["metadata_joins"]=="ready" else ("pending" if s["metadata_joins"]=="pending" else "empty")), unsafe_allow_html=True)
         if enrich_csv.exists(): st.caption(f"`{enrich_csv.name}`")
         if st.button("Open Metadata mapping", key="open_step3"):
             st.session_state.route = "metadata"; st.rerun()
 
     st.divider()
+
     st.write("### Import stats")
-    stats = compute_import_stats(norm_csv, audio_csv if audio_csv.exists() else None, enrich_csv if enrich_csv.exists() else None, use_stem_fallback=st.session_state.get("use_stem_fallback", True))
+    stats = compute_import_stats(
+        norm_csv,
+        audio_csv if audio_csv.exists() else None,
+        enrich_csv if enrich_csv.exists() else None,
+        use_stem_fallback=st.session_state.get("use_stem_fallback", True)
+    )
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Detections (rows)", f"{stats['detections_rows']:,}")
     c2.metric("Unique files in detections", f"{stats['unique_files_in_detections']:,}")
@@ -562,18 +712,7 @@ def view_overview() -> None:
     else:
         st.info("Complete all three steps above to launch the PAMalytics dashboard.")
 
-    st.divider()
-    cols = st.columns(3)
-    with cols[0]:
-        st.write("**IDs**"); st.code(f"project_id: {data['project_id']}"); st.code(f"created_by: {data.get('created_by','user')}")
-    with cols[1]:
-        st.write("**Dates**"); st.code(f"created_at: {data.get('created_at','')}"); st.code(f"last_opened: {data.get('last_opened','')}")
-    with cols[2]:
-        st.write("**Folders**"); 
-        for k, v in (data.get("paths") or {}).items(): st.code(f"{k}: {v}")
-    st.divider()
-    nav_row("Back to Project Hub", "hub", key_prefix="overview_bottom")
-
+# ------------------ Import results (Data mapping) ------------------
 def _auto_guess(colnames: List[str], candidates: List[str]) -> Optional[str]:
     lower = {c.lower(): c for c in colnames}
     for cand in candidates:
@@ -581,8 +720,8 @@ def _auto_guess(colnames: List[str], candidates: List[str]) -> Optional[str]:
             return lower[cand]
     return None
 
-# ------------------ Import results (Data mapping) ------------------
 def view_import_results() -> None:
+    hide_chrome(True, True)
     import pandas as pd
     if not st.session_state.get("auth_user"): st.session_state.route = "login"; st.rerun()
     if not st.session_state.get("current_project"): st.session_state.route = "hub"; st.rerun()
@@ -890,8 +1029,9 @@ def _build_normalised_table(
 
     return norm, notes
 
-# ------------------ Audio mapping ------------------
+# ------------------ Locate your audio files (Audio mapping) ------------------
 def view_locate_audio() -> None:
+    hide_chrome(True, True)
     import pandas as pd
     if not st.session_state.get("auth_user"): st.session_state.route = "login"; st.rerun()
     if not st.session_state.get("current_project"): st.session_state.route = "hub"; st.rerun()
@@ -902,6 +1042,7 @@ def view_locate_audio() -> None:
     st.caption("Point to one or more folders. We'll index audio files recursively and create a filename → absolute path map.")
     nav_row("Back to Overview", "overview", "Go to Metadata mapping", "metadata", key_prefix="locate_top")
 
+    # Folder picker
     col_pick, col_hint = st.columns([1,2])
     if col_pick.button("Browse for a folder…", key="browse_folder"):
         chosen = pick_folder_dialog()
@@ -941,6 +1082,7 @@ def view_locate_audio() -> None:
             df["duplicate_name"] = df["filename"].duplicated(keep=False)
             st.session_state.audio_map_df = df.to_dict(orient="records")
 
+    # Results
     if isinstance(st.session_state.audio_map_df, list):
         df = pd.DataFrame.from_records(st.session_state.audio_map_df)
         st.write(f"Indexed **{len(df)}** audio files from **{len(st.session_state.audio_dirs)}** folder(s).")
@@ -974,6 +1116,7 @@ def view_locate_audio() -> None:
             st.dataframe(mapping.head(200), use_container_width=True)
             st.caption(f"Rows: {len(mapping)}  • Columns: filename, path")
 
+            # Coverage (live if detections exist)
             use_stem = st.checkbox(
                 "Allow stem fallback (match without extension when filenames differ only by extension)",
                 value=st.session_state.get("use_stem_fallback", True),
@@ -995,6 +1138,7 @@ def view_locate_audio() -> None:
                 st.session_state.audio_save_path = str(out_csv); set_status(proj_path, "audio_resolver", "ready")
                 st.success(f"Saved audio mapping to: `{out_csv}`")
 
+                # Final coverage after save
                 if norm_csv.exists():
                     cov = compute_audio_coverage(norm_csv, out_csv, use_stem_fallback=st.session_state.get("use_stem_fallback", True))
                     det_pct = (cov.matched_rows / cov.total_rows * 100.0) if cov.total_rows else 0.0
@@ -1004,24 +1148,7 @@ def view_locate_audio() -> None:
                         f"Files: **{file_pct:.1f}%** ({cov.matched_unique_files:,} / {cov.total_unique_files:,})"
                     )
 
-    nav_row("Back to Overview", "overview", "Go to Metadata mapping", "metadata", key_prefix="locate_bottom")
-
-def pick_folder_dialog() -> Optional[str]:
-    """Open a native folder-picker dialog and return the chosen absolute path, or None."""
-    try:
-        system = platform.system().lower()
-        if "darwin" in system or "mac" in system:
-            script = 'set _folder to POSIX path of (choose folder with prompt "Select an audio folder")\nreturn _folder'
-            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-            path = res.stdout.strip(); return path or None
-        else:
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
-            folder = filedialog.askdirectory(title="Select an audio folder")
-            root.destroy(); return folder or None
-    except Exception:
-        return None
+        nav_row("Back to Overview", "overview", "Go to Metadata mapping", "metadata", key_prefix="locate_bottom")
 
 def build_audio_mapping(df, rule: str):
     import pandas as pd
@@ -1035,15 +1162,16 @@ def build_audio_mapping(df, rule: str):
     df2 = df2.drop_duplicates(subset=["filename"], keep="first")
     return df2[["filename","path"]].copy()
 
-# ------------------ Metadata join ------------------
+# ------------------ Metadata join (Metadata mapping) ------------------
 def view_metadata() -> None:
+    hide_chrome(True, True)
     import pandas as pd, os
     if not st.session_state.get("auth_user"): st.session_state.route = "login"; st.rerun()
     if not st.session_state.get("current_project"): st.session_state.route = "hub"; st.rerun()
 
     proj_path = Path(st.session_state.current_project)
     st.title("Metadata mapping — Join metadata")
-    st.caption("Upload a metadata table (e.g., recorder/site/lat/lon). Map a join key and save enriched detections.")
+    st.caption("Upload a metadata table (e.g., site, lat, lon, recorder). Map a join key and save enriched detections.")
     nav_row("Back to Audio mapping", "locate_audio", "Back to Overview", "overview", key_prefix="meta_top")
 
     norm_csv = project_path(proj_path, "data_normalised") / "detections_normalised.csv"
@@ -1081,8 +1209,9 @@ def view_metadata() -> None:
     meta_key = st.selectbox("Metadata key (column in uploaded table)", options=meta_cols)
 
     st.subheader("3) Preview join")
+    preview_rows = min(200, len(det))
     merged = det.merge(meta, left_on=det_key, right_on=meta_key, how="left")
-    st.dataframe(merged.head(200), use_container_width=True)
+    st.dataframe(merged.head(preview_rows), use_container_width=True)
     join_rate = 100.0 * (1.0 - float(merged[meta_key].isna().mean()))
     st.info(f"Join coverage: **{join_rate:.1f}%** of detections joined with metadata (via `{det_key} == {meta_key}`).")
 
@@ -1093,27 +1222,18 @@ def view_metadata() -> None:
         st.success(f"Saved enriched detections to: `{out_csv}`")
         nav_row("Back to Overview", "overview", "Launch dashboard", "dashboard", key_prefix="meta_after_save")
 
-# ------------------ Dashboard (integrated PAMalytics) ------------------
-def _unhide_chrome_for_pa():
-    st.markdown(
-        """
-        <style>
-          header, footer, [data-testid="stSidebar"], [data-testid="stSidebarNav"] { display: block !important; visibility: visible !important; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
+# ------------------ Dashboard (integrated PA pages) ------------------
 def _load_renderer(module_stem: str, func_name: str):
     """
-    Resolve a renderer function from:
-      1) scripts/ as a module import (e.g., 'dashboard')
-      2) scripts/*.py by filename (case-insensitive)
-      3) scripts/pages/*.py by filename (case-insensitive), including '1_Validate.py'
+    Try, in order:
+      1) import as a top-level module on sys.path
+      2) load case-insensitive from scripts/
+      3) load case-insensitive from scripts/pages/
+    Return callable or None.
     """
     import importlib, importlib.util
 
-    # 1) normal import
+    # 1) top-level import
     for cand in {module_stem, module_stem.capitalize()}:
         try:
             mod = importlib.import_module(cand)
@@ -1124,96 +1244,112 @@ def _load_renderer(module_stem: str, func_name: str):
 
     def _scan_and_load(folder: Path, stem: str):
         for p in folder.glob("*.py"):
-            if p.stem.lower() == stem.lower():
+            if p.stem.lower() == stem.lower() or stem.lower() in p.stem.lower():
                 spec = importlib.util.spec_from_file_location(p.stem, p)
                 if spec and spec.loader:
-                    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)  # type: ignore
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)  # type: ignore
                     fn = getattr(mod, func_name, None)
-                    if callable(fn): return fn
+                    if callable(fn):
+                        return fn
         return None
 
-    # 2) scripts/
     fn = _scan_and_load(SCRIPTS_DIR, module_stem)
     if fn: return fn
-
-    # 3) scripts/pages/ (support names like 1_Validate.py)
     pages_dir = SCRIPTS_DIR / "pages"
     if pages_dir.exists():
         fn = _scan_and_load(pages_dir, module_stem)
-        if not fn:
-            for p in pages_dir.glob("*.py"):
-                if module_stem.lower() in p.stem.lower():
-                    spec = importlib.util.spec_from_file_location(p.stem, p)
-                    if spec and spec.loader:
-                        mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)  # type: ignore
-                        fn = getattr(mod, func_name, None)
-                        if callable(fn): return fn
+        if fn: return fn
+
     return None
 
-def _make_sources(proj_path: Path) -> Dict[str, Any]:
-    audio_csv = project_path(proj_path, "workspace") / "audio_paths.csv"
-    base_dir = str(project_path(proj_path, "root"))
-    return {
-        "project_root": str(proj_path),
-        "audio_map_csv": str(audio_csv) if audio_csv.exists() else None,
-        "base_dir": base_dir,
-        "use_stem_fallback": st.session_state.get("use_stem_fallback", True),
-    }
-
 def view_dashboard() -> None:
-    _unhide_chrome_for_pa()
+    # SHOW sidebar here (and keep header/footer hidden)
+    hide_chrome(hide_sidebar=False, hide_header=True)
+
+    import pandas as pd
+
     if not st.session_state.get("auth_user"):
         st.session_state.route = "login"; st.rerun()
     if not st.session_state.get("current_project"):
         st.session_state.route = "hub"; st.rerun()
 
     proj_path = Path(st.session_state.current_project)
+
     st.title("PAMalytics")
-    st.caption("Studio-imported data via existing PAMalytics pages.")
-    nav_row("Back to Overview", "overview", key_prefix="pa_top")
 
-    df, notes = build_analysis_dataset(proj_path, use_stem_fallback=st.session_state.get("use_stem_fallback", True))
-    if df is None or df.empty:
-        st.error("; ".join(notes) if notes else "No data to display."); return
-
-    sources = _make_sources(proj_path)
-
-    fn_dash = _load_renderer("dashboard", "render_dashboard")
-    if fn_dash:
-        fn_dash(df, sources)
-    else:
-        st.error("Could not find `render_dashboard(df, sources)` in scripts/ or scripts/pages/.")
+    # Build dataset
+    df_det, notes = build_analysis_dataset(proj_path, use_stem_fallback=True)
+    if df_det is None or df_det.empty:
+        st.error("No matched detections with audio. Complete Import → Audio mapping → Metadata mapping first.")
+        nav_row("Back to Overview", "overview", key_prefix="pa_err")
         return
 
-    with st.expander("Open other PAMalytics pages", expanded=False):
-        col1, col2, col3 = st.columns(3)
-        if col1.button("Validation"):
-            fn = _load_renderer("validation", "render_validation")
-            if fn: fn(df, sources)
-            else: st.error("`render_validation(df, sources)` not found.")
-        if col2.button("Settings"):
-            fn = _load_renderer("settings", "render_settings")
-            if fn: fn(df, sources)
-            else: st.error("`render_settings(df, sources)` not found.")
-        if col3.button("Occupancy"):
-            fn = _load_renderer("occupancy", "render_occupancy")
-            if fn: fn(df, sources)
-            else: st.error("`render_occupancy(df, sources)` not found.")
+    # Load audio map
+    audio_csv = project_path(proj_path, "workspace") / "audio_paths.csv"
+    try:
+        audio_map = pd.read_csv(audio_csv)
+    except Exception as e:
+        st.error(f"Could not read audio map: {e}")
+        return
+
+    # Build exact detection clips (NO cap) and pass to pages
+    sources = ensure_detection_clips(proj_path, df_det, audio_map)
+
+    # Sidebar navigation (your pages)
+    with st.sidebar:
+        st.header("Pages")
+        choice = st.radio(
+            "Navigate",
+            ["Dashboard", "Validation", "Settings", "Occupancy"],
+            index=["Dashboard","Validation","Settings","Occupancy"].index(st.session_state.get("pa_page","Dashboard")),
+            key="pa_page_radio"
+        )
+        st.session_state.pa_page = choice
+
+    page = st.session_state.pa_page
+
+    def _render(page_key: str, func_name: str):
+        fn = _load_renderer(page_key, func_name)
+        if not fn:
+            st.error(f"Could not find a renderer for '{page_key}' in {SCRIPTS_DIR} or {SCRIPTS_DIR/'pages'}.")
+            return
+        try:
+            fn(df_det, sources)
+        except TypeError as e:
+            st.error(f"Dashboard entrypoint {func_name}() failed: {e}")
+        except Exception as e:
+            st.error(f"Error in {page_key}: {e}")
+
+    if page == "Dashboard":
+        _render("dashboard", "render_dashboard")
+    elif page == "Validation":
+        _render("validation", "render_validation")
+    elif page == "Settings":
+        _render("settings", "render_settings")
+    elif page == "Occupancy":
+        _render("occupancy", "render_occupancy")
 
     nav_row("Back to Overview", "overview", key_prefix="pa_bottom")
 
+# ---------- Folder picker ----------
+def pick_folder_dialog() -> Optional[str]:
+    try:
+        system = platform.system().lower()
+        if "darwin" in system or "mac" in system:
+            script = 'set _folder to POSIX path of (choose folder with prompt "Select an audio folder")\nreturn _folder'
+            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            path = res.stdout.strip(); return path or None
+        else:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk(); root.withdraw(); root.attributes("-topmost", True)
+            folder = filedialog.askdirectory(title="Select an audio folder")
+            root.destroy(); return folder or None
+    except Exception:
+        return None
+
 # ---------- Router ----------
-def _route_from_query():
-    # New API: st.query_params
-    qp = dict(st.query_params)
-    return qp.get("route")
-
-# If route supplied in URL, respect it before drawing
-forced = _route_from_query()
-if forced and forced != st.session_state.get("route"):
-    st.session_state["route"] = forced
-    st.rerun()
-
 route = st.session_state.get("route", "login")
 if route == "login":          view_login()
 elif route == "hub":          view_hub()
@@ -1222,5 +1358,4 @@ elif route == "import":       view_import_results()
 elif route == "locate_audio": view_locate_audio()
 elif route == "metadata":     view_metadata()
 elif route == "dashboard":    view_dashboard()
-else:
-    st.session_state.route = "login"; st.rerun()
+else:                         st.session_state.route = "login"; st.rerun()
