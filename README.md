@@ -1,4 +1,4 @@
-# PAMalytics — PAM Classifier, Detection Dashboard & Occupancy 
+# Pileated Gibbon Classifier, Detection Dashboard & Occupancy 
 [![CI (macOS & Windows)](https://github.com/AlastairPickering/PAMalytics/actions/workflows/ci.yaml/badge.svg)](https://github.com/AlastairPickering/PAMalytics/actions/workflows/ci.yaml) <br>
 An end-to-end workflow for deploying a trained pileated gibbon classifier, reviewing results, validating clips with spectrograms, fitting occupancy models that account for imperfect detection, and launching the processing pipeline.
 
